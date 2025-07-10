@@ -13,80 +13,103 @@ class TextMessageHandler
 {
     public function handle(string $text, int $chatId): void
     {
-        $update = Telegram::getWebhookUpdate();
-        $message = $update->getMessage();
+        try {
+            $update = Telegram::getWebhookUpdate();
+            $message = $update->getMessage();
 
+            if (!$message) return;
 
-        $replyToMessage = $message->getReplyToMessage();
+            $chatId = null;
+            $chat = $message->getChat();
+            if ($chat) {
+                $chatId = $chat->getId();
+            }
+            $text = $message->getText();
+            $replyToMessage = $message->getReplyToMessage();
 
-        // 1. Admin reply orqali foydalanuvchiga javob yuborilsa
+            // Faqat admin reply qilgan bo‘lsa va reply mavjud bo‘lsa
+            if ($replyToMessage && isAdmin($chatId)) {
+                $replyText = $replyToMessage->getText();
 
-        if ($replyToMessage && isAdmin($chatId)) {
-            $replyText = $replyToMessage->getText();
+                // ID: 123. formatidan appeal ID ni olish
+                if (preg_match('/ID:\s*(\d+)\./i', $replyText, $matches)) {
+                    $appealId = $matches[1] ?? null;
+                    $appeal = \App\Models\Appeal::find($appealId);
 
-            if (preg_match('/id(\d+)\./', $replyText, $matches)) {
-                $appealId = $matches[1] ?? null;
-                $appeal = \App\Models\Appeal::find($appealId);
+                    if (!$appeal) {
+                        Telegram::sendMessage([
+                            'chat_id' => $chatId,
+                            'text' => "❗ Murojaat topilmadi. Ehtimol, noto‘g‘ri ID."
+                        ]);
+                        return;
+                    }
 
-                if ($appeal) {
                     try {
-                        // Javob yuborish
+                        // Asl reply mavjud bo‘lsa, reply bilan javob beriladi
                         Telegram::sendMessage([
                             'chat_id' => $appeal->user_id,
                             'text' => "💬 Sizga admin javob berdi:\n\n{$text}",
                             'reply_to_message_id' => $appeal->telegram_message_id
                         ]);
-
-                        $appeal->update(['is_reviewed' => true]);
-
-                        Telegram::sendMessage([
-                            'chat_id' => $chatId,
-                            'text' => "✅ Javob foydalanuvchiga yuborildi va murojaat ko‘rib chiqilgan deb belgilandi."
-                        ]);
-
-                        return;
                     } catch (TelegramResponseException $e) {
-                        $errorMessage = $e->getMessage();
+                        $error = $e->getMessage();
 
-                        if (str_contains($errorMessage, 'message to be replied not found')) {
+                        if (stripos($error, 'bot was blocked by the user') !== false) {
+                            Telegram::sendMessage([
+                                'chat_id' => $chatId,
+                                'text' => "❌ Foydalanuvchi botni bloklagan. Javob yuborilmadi."
+                            ]);
+                            return;
+                        }
+
+                        if (stripos($error, 'message to be replied not found') !== false) {
+                            // Asl reply topilmasa oddiy xabar yuboriladi
                             Telegram::sendMessage([
                                 'chat_id' => $appeal->user_id,
                                 'text' => "💬 [‼️ O‘chirilgan murojaatingizga javob]\n\n{$text}"
                             ]);
 
-                            $appeal->update(['is_reviewed' => true]);
-
                             Telegram::sendMessage([
                                 'chat_id' => $chatId,
-                                'text' => "⚠️ Asl murojaat o‘chirilgan, ammo foydalanuvchiga oddiy javob yuborildi. Murojaat ko‘rib chiqilgan deb belgilandi."
+                                'text' => "⚠️ Asl murojaat o‘chirilgan, ammo foydalanuvchiga oddiy javob yuborildi."
                             ]);
-
-                            return;
                         } else {
+                            // Boshqa xatolik
                             Telegram::sendMessage([
                                 'chat_id' => $chatId,
-                                'text' => "❗️ Javob yuborishda xatolik yuz berdi:\n" . $errorMessage
+                                'text' => "❗️ Javob yuborishda xatolik:\n{$error}"
                             ]);
-
                             return;
                         }
                     }
+
+                    // Har qanday holatda murojaatni ko‘rib chiqilgan deb belgilash
+                    $appeal->update(['is_reviewed' => true]);
+
+                    Telegram::sendMessage([
+                        'chat_id' => $chatId,
+                        'text' => "✅ Javob yuborildi va murojaat ko‘rib chiqilgan deb belgilandi."
+                    ]);
+                    return;
+
                 } else {
                     Telegram::sendMessage([
                         'chat_id' => $chatId,
-                        'text' => "❗ Murojaat topilmadi. Ehtimol, noto‘g‘ri ID."
+                        'text' => "⚠️ Reply qilingan xabarda 'ID: XXX.' formatida appeal ID topilmadi."
                     ]);
                     return;
                 }
-            } else {
-                Telegram::sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => "⚠️ Reply qilingan xabarda 'idXXX.' formatida appeal ID topilmadi."
-                ]);
-                return;
             }
-        }
+        } catch (\Throwable $e) {
+            // Har qanday istisnolarni tutib logga yozish yoki xatolikni xabar qilish
+            Log::error('Telegram handle() xatolik: ' . $e->getMessage());
 
+            // Ixtiyoriy: admin chatga xatolik yuborish
+            // Telegram::sendMessage([
+            //     'chat_id' => 'ADMIN_CHAT_ID',
+            //     'text' => "❌ Ichki xatolik: " . $e->getMessage()
+            // ]);
+        }
 
 
 
@@ -111,12 +134,20 @@ class TextMessageHandler
         }
 
         if (!$step) {
-            Telegram::sendMessage([
-                'chat_id' => $chatId,
-                'text' => "❗ Iltimos, /start buyrug‘i bilan qayta boshlang."
-            ]);
+            if (isAdmin($chatId)) {
+                Telegram::sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => "🔐 Siz adminsiz. Davom etish uchun /adminsahifa buyrug‘idan foydalaning."
+                ]);
+            } else {
+                Telegram::sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => "❗ Iltimos, /start buyrug‘i bilan qayta boshlang."
+                ]);
+            }
             return;
         }
+
 
         $from = $message->getFrom();
         $user = User::updateOrCreate(
@@ -179,7 +210,7 @@ class TextMessageHandler
                 Telegram::sendMessage([
                     'chat_id' => $admin->id,
                     'text' => "📨 <b>Yangi murojaat:</b>\n"
-                        . "<b>ID: {$appeal->id}</b>\n"
+                        . "<b>ID: {$appeal->id}</b>.\n"
                         . "👤 <b>Ismi:</b> <i>{$user->first_name}</i>\n"
                         . "🔗 <b>Username:</b> <i>{$usernameTag}</i>\n\n"
                         . "🎭 <b>Rol:</b> <i>{$roleUz}</i>\n"

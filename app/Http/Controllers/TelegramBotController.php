@@ -420,7 +420,7 @@ class TelegramBotController extends Controller
                 Telegram::sendMessage([
                     'chat_id' => $chatId,
                     'text' => "📨 <b>Yangi murojaat:</b>\n"
-                        . "<b>ID: {$appeal->id}</b>\n"
+                        . "<b>ID: {$appeal->id}.</b>\n"
                         . "👤 <b>Ismi:</b> <i>{$user->first_name}</i>\n"
                         . "🔗 <b>Username:</b> <i>{$usernameTag}</i>\n\n"
                         . "🎭 <b>Rol:</b> <i>{$roleUz}</i>\n"
